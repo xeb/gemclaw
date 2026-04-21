@@ -106,19 +106,26 @@ class GemClawApp:
         log_info(self.logger, "Launching Claude Code with proxy environment...")
 
         env = os.environ.copy()
+
+        # Claude Code only honors ANTHROPIC_BASE_URL when it's in
+        # API-key mode. Without ANTHROPIC_API_KEY it falls back to its
+        # cached claude.ai OAuth token and talks directly to
+        # api.anthropic.com, ignoring our base URL. So we set a dummy
+        # key to force API-key mode; our proxy doesn't validate it.
         env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
-        env.pop("ANTHROPIC_API_KEY", None)
-        # Do NOT set ANTHROPIC_MODEL to the Gemini slug — Claude Code's
-        # interactive TUI validates model names client-side and rejects
-        # anything that isn't a Claude slug ("There's an issue with the
-        # selected model..."). Let Claude Code keep its default Claude
-        # model name; the proxy overrides it to GEMINI_MODEL on every
-        # `/v1/messages` call regardless of what the client sends.
+        env["ANTHROPIC_API_KEY"] = "sk-gemclaw-dummy"
+
+        # Set a real Claude slug so the interactive TUI's local model
+        # validation passes. The proxy overrides the model to
+        # GEMINI_MODEL per-request on the outbound Gemini call
+        # regardless of what the client sends.
+        env["ANTHROPIC_MODEL"] = "claude-sonnet-4-5-20250929"
+        env["ANTHROPIC_SMALL_FAST_MODEL"] = "claude-haiku-4-5-20251001"
 
         self.logger.debug(f"Claude Code environment:")
         self.logger.debug(f"  ANTHROPIC_BASE_URL={env['ANTHROPIC_BASE_URL']}")
-        self.logger.debug(f"  ANTHROPIC_API_KEY=<unset>")
-        self.logger.debug(f"  ANTHROPIC_MODEL=<unset — proxy overrides per-request>")
+        self.logger.debug(f"  ANTHROPIC_API_KEY=<dummy — forces API-key mode>")
+        self.logger.debug(f"  ANTHROPIC_MODEL={env['ANTHROPIC_MODEL']} (proxy overrides per-request)")
 
         # Launch Claude Code
         try:
