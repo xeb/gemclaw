@@ -24,12 +24,14 @@ If you want multi-provider routing, go use LiteLLM. This repo is the smallest po
 ## Install
 
 ```console
-$ uv tool install https://github.com/xeb/gemclaw
+$ uv tool install git+https://github.com/xeb/gemclaw
 Resolved 38 packages in 243ms
 Installed 1 package in 23ms
  + gemclaw==0.1.0
 Installed 1 executable: gemclaw
 ```
+
+> Note the `git+` prefix. Without it, `uv` will yell at you.
 
 ## Run
 
