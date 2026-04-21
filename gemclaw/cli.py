@@ -128,7 +128,10 @@ class GemClawApp:
         # the cached claude.ai OAuth token and ignores ANTHROPIC_BASE_URL.
         # The proxy doesn't validate the key — any non-empty value works.
         env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
-        env["ANTHROPIC_API_KEY"] = "sk-gemclaw-dummy"
+        # Must match Anthropic's sk-ant-api03-... shape or Claude Code's
+        # client-side key-format check rejects it and shows "Not logged in"
+        # without ever calling the API. The proxy doesn't validate the value.
+        env["ANTHROPIC_API_KEY"] = "sk-ant-api03-gemclaw-proxy-dummy-key-not-used-but-format-matters-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         env.pop("ANTHROPIC_AUTH_TOKEN", None)  # avoid auth-mode conflict
 
         # Real Claude slugs so the TUI's client-side model validation

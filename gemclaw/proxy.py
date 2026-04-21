@@ -82,6 +82,14 @@ def create_app(cli_logger: logging.Logger = None) -> FastAPI:
     async def health_check():
         return {"status": "ok", "service": "gemproxy"}
 
+    @app.api_route("/", methods=["GET", "HEAD"])
+    async def root_probe():
+        """Claude Code's Bun runtime does a HEAD / on startup as a reachability
+        probe. If we 404 that, Claude Code decides the base URL is invalid and
+        silently falls back to 'Not logged in' without ever calling /v1/messages.
+        """
+        return {"service": "gemclaw", "api": "anthropic-compatible"}
+
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(request: Request):
         """Stub for Anthropic's count_tokens endpoint.
