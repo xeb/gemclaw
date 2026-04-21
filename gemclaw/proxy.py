@@ -52,43 +52,88 @@ class MessageRequest(BaseModel):
 def create_app(cli_logger: logging.Logger = None) -> FastAPI:
     """Create and configure FastAPI application."""
 
-    # Use provided logger or the module-level logger
     active_logger = cli_logger if cli_logger else logger
 
     app = FastAPI(title="GemClaw")
     anthropic_to_gemini = AnthropicToGeminiTranslator(active_logger)
     gemini_to_anthropic = GeminiToAnthropicTranslator(active_logger)
 
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        """Log every request that hits the proxy — method, path, status.
+
+        Critical for debugging what Claude Code actually sends. Without this,
+        unhandled paths (like model validation pre-flights) return 404 silently
+        and leave no trace in the log.
+        """
+        method = request.method
+        path = request.url.path
+        query = request.url.query
+        logger.info(f"→ {method} {path}{'?' + query if query else ''}")
+        try:
+            response = await call_next(request)
+            logger.info(f"← {method} {path} {response.status_code}")
+            return response
+        except Exception as e:
+            logger.error(f"← {method} {path} EXC {e!r}", exc_info=True)
+            raise
+
     @app.get("/health")
     async def health_check():
-        """Health check endpoint."""
         return {"status": "ok", "service": "gemproxy"}
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(request: Request):
+        """Stub for Anthropic's count_tokens endpoint.
+
+        Claude Code calls this to estimate context size. We don't have a
+        real tokenizer for Gemini here — return a rough char/4 estimate so
+        the client doesn't error out.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        total_chars = 0
+        for msg in body.get("messages", []) or []:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        total_chars += len(str(block.get("text", "")))
+        system = body.get("system")
+        if isinstance(system, str):
+            total_chars += len(system)
+        elif isinstance(system, list):
+            for item in system:
+                if isinstance(item, dict):
+                    total_chars += len(str(item.get("text", "")))
+        estimated = max(1, total_chars // 4)
+        logger.debug(f"count_tokens estimate: {estimated} (chars={total_chars})")
+        return {"input_tokens": estimated}
 
     @app.post("/v1/messages")
     async def messages(request: Request):
         """Proxy for Anthropic /v1/messages endpoint."""
         try:
-            # Parse request
             body = await request.json()
             logger.debug(f"Received Anthropic request for model: {body.get('model')}")
             log_debug_json(logger, "Request body", body)
 
-            # Verify required fields
             if "messages" not in body:
                 raise HTTPException(status_code=400, detail="Missing 'messages' field")
             if "max_tokens" not in body:
                 raise HTTPException(status_code=400, detail="Missing 'max_tokens' field")
 
-            # Override model to gemini-3.1-pro-preview
             original_model = body.get("model", "unknown")
             body["model"] = GEMINI_MODEL
             logger.info(f"Model override: {original_model} → {GEMINI_MODEL}")
 
-            # Translate to Gemini format
             gemini_request = anthropic_to_gemini.translate_request(body)
             log_debug_json(logger, "Translated to Gemini format", gemini_request)
 
-            # Call Gemini API
             google_api_key = os.environ.get("GEMINI_API_KEY")
             if not google_api_key:
                 raise HTTPException(
@@ -96,7 +141,6 @@ def create_app(cli_logger: logging.Logger = None) -> FastAPI:
                     detail="GEMINI_API_KEY not set in proxy environment",
                 )
 
-            # Check if streaming
             is_streaming = body.get("stream", False)
 
             if is_streaming:
@@ -105,6 +149,7 @@ def create_app(cli_logger: logging.Logger = None) -> FastAPI:
                     google_api_key,
                     gemini_to_anthropic,
                     logger,
+                    original_model,
                 )
             else:
                 return await _handle_non_streaming(
@@ -112,6 +157,7 @@ def create_app(cli_logger: logging.Logger = None) -> FastAPI:
                     google_api_key,
                     gemini_to_anthropic,
                     logger,
+                    original_model,
                 )
 
         except HTTPException:
@@ -121,6 +167,33 @@ def create_app(cli_logger: logging.Logger = None) -> FastAPI:
         except Exception as e:
             logger.error(f"Error processing request: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+    @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+    async def catch_all(full_path: str, request: Request):
+        """Log any Anthropic-API path we haven't explicitly handled.
+
+        This makes it trivial to discover what Claude Code is probing on
+        startup (model validation, billing, capabilities, etc.) — the body
+        and headers get logged, then we return a descriptive 404.
+        """
+        body_preview = ""
+        try:
+            raw = await request.body()
+            if raw:
+                try:
+                    body_preview = json.dumps(json.loads(raw.decode("utf-8")))[:2000]
+                except Exception:
+                    body_preview = raw.decode("utf-8", errors="replace")[:2000]
+        except Exception:
+            pass
+        logger.warning(
+            f"UNHANDLED {request.method} /{full_path} "
+            f"headers={dict(request.headers)} body={body_preview!r}"
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"gemclaw has no handler for {request.method} /{full_path}",
+        )
 
     return app
 
@@ -198,6 +271,7 @@ async def _handle_non_streaming(
     google_api_key: str,
     translator: GeminiToAnthropicTranslator,
     logger: logging.Logger,
+    original_model: str = None,
 ) -> dict:
     """Handle non-streaming Gemini API call."""
     try:
@@ -233,8 +307,9 @@ async def _handle_non_streaming(
             },
         }
 
-        # Translate response
         anthropic_response = translator.translate_response(gemini_response)
+        if original_model:
+            anthropic_response["model"] = original_model
         log_debug_json(logger, "Translated response", anthropic_response)
 
         logger.info(
@@ -258,6 +333,7 @@ async def _handle_streaming(
     google_api_key: str,
     translator: GeminiToAnthropicTranslator,
     logger: logging.Logger,
+    original_model: str = None,
 ):
     """Stream a Gemini call back as Anthropic SSE events.
 
@@ -337,7 +413,7 @@ async def _handle_streaming(
                             "type": "message",
                             "role": "assistant",
                             "content": [],
-                            "model": "gemini-3.1-pro-preview",
+                            "model": original_model or "gemini-3.1-pro-preview",
                             "stop_reason": None,
                             "stop_sequence": None,
                             "usage": {"input_tokens": input_tokens, "output_tokens": 0},
@@ -449,7 +525,7 @@ async def _handle_streaming(
                         "type": "message",
                         "role": "assistant",
                         "content": [],
-                        "model": "gemini-3.1-pro-preview",
+                        "model": original_model or "gemini-3.1-pro-preview",
                         "stop_reason": None,
                         "stop_sequence": None,
                         "usage": {"input_tokens": 0, "output_tokens": 0},

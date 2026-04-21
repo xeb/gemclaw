@@ -105,17 +105,20 @@ class GemClawApp:
         """Launch Claude Code with proxy configuration."""
         log_info(self.logger, "Launching Claude Code with proxy environment...")
 
-        # Set up environment
         env = os.environ.copy()
         env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
-        # Remove ANTHROPIC_API_KEY to avoid auth conflict with cached claude.ai token
         env.pop("ANTHROPIC_API_KEY", None)
-        env["ANTHROPIC_MODEL"] = GEMINI_MODEL
+        # Do NOT set ANTHROPIC_MODEL to the Gemini slug — Claude Code's
+        # interactive TUI validates model names client-side and rejects
+        # anything that isn't a Claude slug ("There's an issue with the
+        # selected model..."). Let Claude Code keep its default Claude
+        # model name; the proxy overrides it to GEMINI_MODEL on every
+        # `/v1/messages` call regardless of what the client sends.
 
         self.logger.debug(f"Claude Code environment:")
         self.logger.debug(f"  ANTHROPIC_BASE_URL={env['ANTHROPIC_BASE_URL']}")
         self.logger.debug(f"  ANTHROPIC_API_KEY=<unset>")
-        self.logger.debug(f"  ANTHROPIC_MODEL={env['ANTHROPIC_MODEL']}")
+        self.logger.debug(f"  ANTHROPIC_MODEL=<unset — proxy overrides per-request>")
 
         # Launch Claude Code
         try:

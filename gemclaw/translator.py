@@ -389,8 +389,8 @@ class GeminiToAnthropicTranslator:
         usage = {"input_tokens": 0, "output_tokens": 0}
         if "usageMetadata" in gemini_response:
             meta = gemini_response["usageMetadata"]
-            usage["input_tokens"] = meta.get("inputTokenCount", 0)
-            usage["output_tokens"] = meta.get("outputTokenCount", 0)
+            usage["input_tokens"] = meta.get("inputTokenCount") or 0
+            usage["output_tokens"] = meta.get("outputTokenCount") or 0
 
         return {
             "id": message_id,
