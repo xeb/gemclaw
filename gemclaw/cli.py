@@ -107,25 +107,42 @@ class GemClawApp:
 
         env = os.environ.copy()
 
-        # Claude Code only honors ANTHROPIC_BASE_URL when it's in
-        # API-key mode. Without ANTHROPIC_API_KEY it falls back to its
-        # cached claude.ai OAuth token and talks directly to
-        # api.anthropic.com, ignoring our base URL. So we set a dummy
-        # key to force API-key mode; our proxy doesn't validate it.
+        # Claude Code has four backend modes: Anthropic API, claude.ai
+        # OAuth, Vertex AI, Bedrock. ANTHROPIC_BASE_URL is only honored
+        # in Anthropic-API mode. On corp/Google machines the default
+        # is often Vertex (CLAUDE_CODE_USE_VERTEX=1), which routes to
+        # Vertex and ignores our proxy entirely. Explicitly unset every
+        # mode-selector we know about to force Anthropic-API mode.
+        for var in (
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+            "ANTHROPIC_VERTEX_PROJECT_ID",
+            "CLOUD_ML_REGION",
+            "ANTHROPIC_BEDROCK_BASE_URL",
+            "AWS_BEARER_TOKEN_BEDROCK",
+        ):
+            env.pop(var, None)
+
+        # Anthropic-API mode requires an API key or it falls back to
+        # the cached claude.ai OAuth token and ignores ANTHROPIC_BASE_URL.
+        # The proxy doesn't validate the key — any non-empty value works.
         env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
         env["ANTHROPIC_API_KEY"] = "sk-gemclaw-dummy"
+        env.pop("ANTHROPIC_AUTH_TOKEN", None)  # avoid auth-mode conflict
 
-        # Set a real Claude slug so the interactive TUI's local model
-        # validation passes. The proxy overrides the model to
-        # GEMINI_MODEL per-request on the outbound Gemini call
-        # regardless of what the client sends.
+        # Real Claude slugs so the TUI's client-side model validation
+        # passes. The proxy overrides to gemini-3.1-pro-preview on every
+        # outbound call regardless of what the client sends.
         env["ANTHROPIC_MODEL"] = "claude-sonnet-4-5-20250929"
         env["ANTHROPIC_SMALL_FAST_MODEL"] = "claude-haiku-4-5-20251001"
 
-        self.logger.debug(f"Claude Code environment:")
+        self.logger.debug("Claude Code environment:")
         self.logger.debug(f"  ANTHROPIC_BASE_URL={env['ANTHROPIC_BASE_URL']}")
         self.logger.debug(f"  ANTHROPIC_API_KEY=<dummy — forces API-key mode>")
         self.logger.debug(f"  ANTHROPIC_MODEL={env['ANTHROPIC_MODEL']} (proxy overrides per-request)")
+        self.logger.debug(f"  CLAUDE_CODE_USE_VERTEX=<cleared>")
+        self.logger.debug(f"  CLAUDE_CODE_USE_BEDROCK=<cleared>")
 
         # Launch Claude Code
         try:
