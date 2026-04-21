@@ -134,11 +134,14 @@ class GemClawApp:
         env["ANTHROPIC_API_KEY"] = "sk-ant-api03-gemclaw-proxy-dummy-key-not-used-but-format-matters-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         env.pop("ANTHROPIC_AUTH_TOKEN", None)  # avoid auth-mode conflict
 
-        # Real Claude slugs so the TUI's client-side model validation
-        # passes. The proxy overrides to gemini-3.1-pro-preview on every
-        # outbound call regardless of what the client sends.
-        env["ANTHROPIC_MODEL"] = "claude-sonnet-4-5-20250929"
-        env["ANTHROPIC_SMALL_FAST_MODEL"] = "claude-haiku-4-5-20251001"
+        # Show the real backend in Claude Code's header. The earlier
+        # "model not found" error with this slug was actually Vertex
+        # rejecting it, not Claude Code — in plain Anthropic-API mode
+        # (routed to our proxy) the TUI just displays whatever slug we
+        # pass. The proxy accepts any model name and overrides to
+        # GEMINI_MODEL on the outbound Gemini call.
+        env["ANTHROPIC_MODEL"] = GEMINI_MODEL
+        env["ANTHROPIC_SMALL_FAST_MODEL"] = GEMINI_MODEL
 
         self.logger.debug("Claude Code environment:")
         self.logger.debug(f"  ANTHROPIC_BASE_URL={env['ANTHROPIC_BASE_URL']}")
