@@ -42,6 +42,34 @@ gemclaw
 
 That's it. gemclaw spins up a tiny local proxy, sets the right env vars for Claude Code, and launches it. When Claude Code exits, the proxy cleans itself up. No background processes to babysit.
 
+## ⚠️ Heads up: gemclaw temporarily sidelines your Claude Code login
+
+**Read this if you're already logged into Claude Code.** If you are, there's an OAuth token at `~/.claude/.credentials.json`. When Claude Code sees that file AND our injected `ANTHROPIC_API_KEY`, it prints an annoying **"Auth conflict"** warning on every start. Worse, it can sometimes pick the cached OAuth token and bypass our proxy entirely — meaning you *think* you're talking to Gemini but you're quietly billing your Anthropic account.
+
+To keep the UI clean and make sure your requests actually reach the Gemini proxy, at startup **gemclaw renames your credentials file**:
+
+```
+~/.claude/.credentials.json   →   ~/.claude/.credentials.json.gemclaw-sidelined
+```
+
+On exit (normal quit, `Ctrl-C`, or `kill`) it **renames it back**. Your login survives.
+
+### What if something goes catastrophically wrong?
+
+If gemclaw gets `kill -9`'d or your machine loses power mid-session, the rename won't auto-undo. You'll see this when you run plain `claude` and it thinks you're logged out. Fix with one line:
+
+```bash
+mv ~/.claude/.credentials.json.gemclaw-sidelined ~/.claude/.credentials.json
+```
+
+(or `credentials.json` without the leading dot, depending on your Claude Code version). That's it. No data is destroyed — the file is literally just renamed.
+
+### Things gemclaw does NOT touch
+
+- `CLAUDE_CONFIG_DIR` — left alone entirely.
+- Any other file in `~/.claude/` — settings, MCP config, history, etc.
+- Your keyring / macOS Keychain — if your credentials live there instead of a file, gemclaw can't move them and you'll see the "Auth conflict" warning. Harmless — just noisy.
+
 ## What you'll see
 
 ```
