@@ -1,5 +1,6 @@
 """CLI entry point for GemClaw."""
 
+import atexit
 import os
 import sys
 import signal
@@ -17,6 +18,17 @@ from gemclaw.proxy import create_app
 import uvicorn
 
 
+# Files in the user's Claude Code config dir that hold the cached claude.ai
+# OAuth token. When an API key is also set (which gemclaw always sets), Claude
+# Code emits "Auth conflict" warnings. We temporarily rename these during the
+# session so the TUI stays clean, and restore them on exit.
+_OAUTH_CREDENTIAL_FILES = [
+    Path.home() / ".claude" / ".credentials.json",
+    Path.home() / ".claude" / "credentials.json",
+]
+_SIDELINE_SUFFIX = ".gemclaw-sidelined"
+
+
 class GemClawApp:
     """Main GemClaw application controller."""
 
@@ -26,6 +38,55 @@ class GemClawApp:
         self.claude_process: Optional[subprocess.Popen] = None
         self.proxy_log_file = None
         self.proxy_log_path: Optional[Path] = None
+        self.sidelined_credentials: list[tuple[Path, Path]] = []
+
+    def _sideline_oauth_credentials(self) -> None:
+        """Temporarily rename cached claude.ai OAuth credential files.
+
+        Claude Code complains 'Auth conflict: Both a token (claude.ai) and
+        an API key (ANTHROPIC_API_KEY) are set' when both are present. We
+        need the API-key path (that's how requests reach our proxy), so
+        shuffle the OAuth file out of the way for the duration of the
+        session. Restored in restore_oauth_credentials().
+
+        We don't use CLAUDE_CONFIG_DIR because the user may have real
+        customizations in ~/.claude that they want active during the
+        gemclaw session.
+        """
+        for path in _OAUTH_CREDENTIAL_FILES:
+            if not path.exists() or not path.is_file():
+                continue
+            backup = path.with_name(path.name + _SIDELINE_SUFFIX)
+            try:
+                if backup.exists():
+                    backup.unlink()
+                path.rename(backup)
+                self.sidelined_credentials.append((path, backup))
+                self.logger.debug(f"Sidelined OAuth credentials: {path} → {backup.name}")
+            except Exception as e:
+                self.logger.warning(f"Could not sideline {path}: {e}")
+
+        if self.sidelined_credentials:
+            atexit.register(self.restore_oauth_credentials)
+            for orig, bak in self.sidelined_credentials:
+                self.logger.debug(f"If gemclaw is killed abnormally, restore with: mv '{bak}' '{orig}'")
+
+    def restore_oauth_credentials(self) -> None:
+        """Move sidelined credential files back to their original paths."""
+        while self.sidelined_credentials:
+            original, backup = self.sidelined_credentials.pop()
+            try:
+                if backup.exists():
+                    if original.exists():
+                        # Something (maybe /login mid-session) recreated
+                        # the credentials. Keep the newer one, drop the backup.
+                        backup.unlink()
+                        self.logger.debug(f"Skipping restore of {original} — file was recreated during session")
+                    else:
+                        backup.rename(original)
+                        self.logger.debug(f"Restored OAuth credentials: {original.name}")
+            except Exception as e:
+                self.logger.warning(f"Could not restore {original}: {e} — manual recovery: mv '{backup}' '{original}'")
 
     def validate_environment(self) -> None:
         """Validate that required environment variables are set."""
@@ -104,6 +165,8 @@ class GemClawApp:
     def run_claude_code(self, port: int, claude_path: str) -> None:
         """Launch Claude Code with proxy configuration."""
         log_info(self.logger, "Launching Claude Code with proxy environment...")
+
+        self._sideline_oauth_credentials()
 
         env = os.environ.copy()
 
@@ -199,11 +262,12 @@ class GemClawApp:
             except Exception:
                 pass
 
+        self.restore_oauth_credentials()
+
         log_info(self.logger, "Cleanup complete")
 
     def run(self, port: Optional[int], skip_updates: bool, verbose: bool, quiet: bool) -> None:
         """Main application flow."""
-        # Setup logging
         log_level = "WARNING"
         if verbose:
             log_level = "DEBUG"
@@ -214,6 +278,13 @@ class GemClawApp:
 
         logger, log_file = setup_logging(level=log_level, verbose=verbose, console_output=verbose)
         self.logger = logger
+
+        # SIGTERM -> SystemExit so the finally block (credential restore,
+        # process cleanup) still runs. Without this, `kill <gemclaw-pid>`
+        # would leave OAuth credentials sidelined on disk.
+        def _sigterm(signum, frame):
+            raise SystemExit(128 + signum)
+        signal.signal(signal.SIGTERM, _sigterm)
 
         # Banner (only in verbose mode)
         if verbose:
